@@ -1,0 +1,71 @@
+name: Codeware Cyberpunk 2.5 Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout Codeware 2.5 branch
+        uses: actions/checkout@v4
+        with:
+          repository: KelpHect/cp2077-codeware
+          ref: patch-2.5-support
+          submodules: false
+
+      - name: Checkout submodules with 2.5 SDK
+        shell: pwsh
+        run: |
+          git config -f .gitmodules submodule.vendor/RED4ext.SDK.url https://github.com/KelpHect/RED4ext.SDK-psiberx.git
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $sdk = git -C vendor/RED4ext.SDK rev-parse HEAD
+          if ($sdk -ne 'b139fcbd51b1c391399662f9fbfc00c5977f7231') {
+            throw "Unexpected SDK commit: $sdk"
+          }
+          Write-Host "SDK commit: $sdk"
+
+      - name: Pin mimalloc 2.2.4 for TiltedCore
+        shell: pwsh
+        run: |
+          $path = "xmake.lua"
+          $content = Get-Content $path -Raw
+          $nl = [Environment]::NewLine
+          $content = $content.Replace(
+            'add_requires("hopscotch-map", "minhook", "spdlog", "tiltedcore")',
+            'add_requires("hopscotch-map", "minhook", "spdlog", "tiltedcore")' + $nl + 'add_requires("mimalloc 2.2.4", {configs = {rltgenrandom = true}})' + $nl + 'add_requireconfs("tiltedcore.mimalloc", {override = true, version = "2.2.4", configs = {rltgenrandom = true}})'
+          )
+          $content = $content.Replace(
+            'add_packages("hopscotch-map", "minhook", "spdlog", "tiltedcore")',
+            'add_packages("hopscotch-map", "minhook", "spdlog", "tiltedcore", "mimalloc")'
+          )
+          Set-Content -Path $path -Value $content -NoNewline
+
+      - name: Install Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Configure Release build
+        run: xmake f -p windows -a x64 -m release -y
+
+      - name: Build Codeware
+        run: xmake -vD -y
+
+      - name: Upload compiled DLL and PDB
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codeware-Cyberpunk-2.5-test
+          path: |
+            build/**/Codeware.dll
+            build/**/Codeware.pdb
+          if-no-files-found: error
